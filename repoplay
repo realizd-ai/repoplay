@@ -1,0 +1,209 @@
+#!/bin/bash
+
+set -euo pipefail
+
+# Print help message
+print_help() {
+  cat <<EOF
+Usage: repoplay [OPTION]... REPO-PATCH-FILE
+Apply repository changes from a JSON file.
+
+Options:
+  -h, --help       Show this help message and exit.
+  -v, --verbose    Enable verbose output (logs actions as they happen).
+  -d, --dry-run    Validate input and show planned actions without modifying files.
+
+Example:
+  repoplay changes.json
+  repoplay -v -d changes.json
+
+Repo patch file format:
+  [
+      {
+          "operation": "create", // Creates a new file
+          "destinationPath": "/absolute-path/Form.tsx", // The absolute path of the new file
+          "content": "import React from 'react';\n" // Full content of the new file
+      },
+      {
+          "operation": "patch", // Applies a patch (unified diff) to an existing file
+          "sourcePath": "/absolute-path/Header.tsx", // The absolute path of the file to be updated
+          "diff": "@@ -2,1 +2,1 @@\n set option1\n" // Unified diff describing changes to the file
+      },
+      {
+          "operation": "delete", // Deletes an existing file
+          "sourcePath": "/absolute-path/OldComponent.tsx" // The absolute path of the file to delete
+      },
+      {
+          "operation": "move", // Moves or renames a file
+          "sourcePath": "/absolute-path/LegacyButton.tsx", // The absolute path of the file to move
+          "destinationPath": "/absolute-path/LegacyButton.tsx" // The new absolute path for the file
+      },
+      {
+          "operation": "dup", // Duplicates an existing file
+          "sourcePath": "/absolute-path/Template.tsx", // The absolute path of the file to duplicate
+          "destinationPath": "/absolute-path/TemplateCopy.tsx" // The absolute path for the duplicate
+      }
+  ]
+
+EOF
+}
+
+# Globals
+VERBOSE=false
+DRY_RUN=false
+BACKUPS=()
+
+# Log function (only logs if verbose is enabled)
+log() {
+  if [ "$VERBOSE" = true ]; then
+    echo "repoplay: $1"
+  fi
+}
+
+# Cleanup function (restores backups on error)
+cleanup() {
+  if [ "${#BACKUPS[@]}" -gt 0 ]; then
+    echo "repoplay: Error occurred. Restoring backups..."
+    for backup in "${BACKUPS[@]}"; do
+      original="${backup%.tmp}"
+      if [ -f "$backup" ]; then
+        mv "$backup" "$original"
+        log "Restored $original from $backup"
+      fi
+    done
+  fi
+  echo "repoplay: no files have been modified"
+  exit 1
+}
+
+trap cleanup ERR
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help)
+      print_help
+      exit 0
+      ;;
+    -v|--verbose)
+      VERBOSE=true
+      shift
+      ;;
+    -d|--dry-run)
+      DRY_RUN=true
+      shift
+      ;;
+    *)
+      INPUT_FILE="$1"
+      shift
+      ;;
+  esac
+done
+
+if [ -z "${INPUT_FILE:-}" ]; then
+  echo "repoplay: Error: No input file specified. Use -h for help."
+  exit 1
+fi
+
+if [ ! -f "$INPUT_FILE" ]; then
+  echo "repoplay: Error: Input file '$INPUT_FILE' does not exist."
+  exit 1
+fi
+
+log "Reading JSON from $INPUT_FILE"
+
+# Read and parse the JSON file
+OPERATIONS=$(jq -c '.[]' "$INPUT_FILE")
+
+# Pre-check phase
+log "Pre-checking all operations..."
+for op in $OPERATIONS; do
+  operation=$(echo "$op" | jq -r '.operation')
+  case "$operation" in
+    create)
+      dst=$(echo "$op" | jq -r '.destinationPath')
+      if [ -f "$dst" ]; then
+        echo "repoplay: Error: Destination file '$dst' already exists for create operation."
+        exit 1
+      fi
+      ;;
+    patch|delete|move|dup)
+      src=$(echo "$op" | jq -r '.sourcePath')
+      if [ ! -f "$src" ]; then
+        echo "repoplay: Error: Source file '$src' does not exist for $operation operation."
+        exit 1
+      fi
+      if [[ "$operation" == "patch" || "$operation" == "delete" || "$operation" == "move" ]]; then
+        backup="$src.tmp"
+        cp "$src" "$backup"
+        BACKUPS+=("$backup")
+        log "Backed up $src to $backup"
+      fi
+      ;;
+    *)
+      echo "repoplay: Error: Invalid operation '$operation' in pre-check phase."
+      exit 1
+      ;;
+  esac
+
+  # Ensure the operation is explicitly valid
+  if [[ "$operation" != "create" && "$operation" != "patch" && "$operation" != "delete" && "$operation" != "move" && "$operation" != "dup" ]]; then
+    echo "repoplay: Error: Unsupported operation '$operation' detected during validation."
+    exit 1
+  fi
+done
+
+if [ "$DRY_RUN" = true ]; then
+  log "Dry run complete. No changes made."
+  exit 0
+fi
+
+# Apply operations
+log "Applying operations..."
+for op in $OPERATIONS; do
+  operation=$(echo "$op" | jq -r '.operation')
+  case "$operation" in
+    create)
+      dst=$(echo "$op" | jq -r '.destinationPath')
+      content=$(echo "$op" | jq -r '.content')
+      echo -e "$content" > "$dst"
+      log "Created $dst"
+      ;;
+    patch)
+      src=$(echo "$op" | jq -r '.sourcePath')
+      diff=$(echo "$op" | jq -r '.diff')
+      echo -e "$diff" | patch "$src"
+      log "Patched $src"
+      ;;
+    delete)
+      src=$(echo "$op" | jq -r '.sourcePath')
+      rm "$src"
+      log "Deleted $src"
+      ;;
+    move)
+      src=$(echo "$op" | jq -r '.sourcePath')
+      dst=$(echo "$op" | jq -r '.destinationPath')
+      mv "$src" "$dst"
+      log "Moved $src to $dst"
+      ;;
+    dup)
+      src=$(echo "$op" | jq -r '.sourcePath')
+      dst=$(echo "$op" | jq -r '.destinationPath')
+      cp "$src" "$dst"
+      log "Duplicated $src to $dst"
+      ;;
+    *)
+      echo "repoplay: Error: Unknown operation '$operation'."
+      cleanup
+      ;;
+  esac
+done
+
+# Cleanup backups
+for backup in "${BACKUPS[@]}"; do
+  rm "$backup"
+  log "Removed backup $backup"
+done
+
+log "All operations completed successfully."
+
