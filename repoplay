@@ -66,6 +66,7 @@ EOF
 VERBOSE=false
 DRY_RUN=false
 BACKUPS=()
+CREATED_FILES=()
 
 # Log function (only logs if verbose is enabled)
 log() {
@@ -76,6 +77,19 @@ log() {
 
 # Cleanup function (restores backups on error)
 cleanup() {
+  # First remove any newly created files
+  if [ "${#CREATED_FILES[@]:-0}" -gt 0 ]; then
+    echo "repoplay: Error occurred. Removing created files..."
+
+    for created in "${CREATED_FILES[@]}"; do
+      if [ -f "$created" ]; then
+        rm "$created"
+        log "Removed created file $created"
+      fi
+    done
+  fi
+
+  # Then restore backups
   if [ "${#BACKUPS[@]:-0}" -gt 0 ]; then
     echo "repoplay: Error occurred. Restoring backups..."
 
@@ -100,10 +114,10 @@ unhandled_error() {
 
 trap unhandled_error ERR
 
-# Check for xmlstarlet
-if ! command -v xmlstarlet >/dev/null 2>&1; then
-  echo "repoplay: Error: xmlstarlet is not installed"
-  echo "repoplay: Please install it using: 'sudo apt-get install xmlstarlet' or 'brew install xmlstarlet'"
+# Check for xmllint
+if ! command -v xmllint >/dev/null 2>&1; then
+  echo "repoplay: Error: xmllint is not installed"
+  echo "repoplay: Please install it using: 'sudo apt-get install libxml2-utils' or 'brew install libxml2'"
   exit 1
 fi
 
@@ -155,14 +169,14 @@ fi
 log "Reading XML from $INPUT_FILE"
 
 # Validate XML format
-if ! xmlstarlet val --well-formed "$INPUT_FILE" >/dev/null 2>&1; then
+if ! xmllint --noout "$INPUT_FILE" 2>/dev/null; then
   echo "repoplay: Error: Invalid XML format in $INPUT_FILE"
   exit 1
 fi
 log "XML format is valid"
 
 # Parse XML operations
-OPERATIONS=$(xmlstarlet sel -t -m "/operations/operation" -c "." "$INPUT_FILE")
+OPERATIONS=$(xmllint --xpath "/operations/operation" "$INPUT_FILE" 2>/dev/null)
 if [ -z "$OPERATIONS" ]; then
   echo "repoplay: Error: No operations found in the input file"
   exit 1
@@ -171,45 +185,46 @@ log "Parsed operations"
 
 # Pre-check phase
 log "Pre-checking all operations"
-xmlstarlet sel -t -m "/operations/operation" \
-    -v "concat(@type,'|',count(preceding::operation) + 1)" -n "$INPUT_FILE" | \
-    while IFS='|' read -r type pos; do
 
-  case "$type" in
-    create)
-      dst=$(xmlstarlet sel -t -m "/operations/operation[@type='create' and \
-        count(preceding::operation) + 1=$pos]" -v "destinationPath" "$INPUT_FILE")
-      log "Operation $type found at position $pos, destinationPath=$dst"
+# Get total number of operations
+count=$(xmllint --xpath "count(//operation)" "$INPUT_FILE")
 
-      if [ -f "$dst" ]; then
-        echo "repoplay: Error: Destination file '$dst' already exists for create operation"
-        exit 1
-      fi
-      ;;
+for ((pos=1; pos<=$count; pos++)); do
+ type=$(xmllint --xpath "string(//operation[$pos]/@type)" "$INPUT_FILE" 2>/dev/null)
 
-    update|delete|move|dup)
-      src=$(xmlstarlet sel -t -m "/operations/operation[@type='$type' and \
-        count(preceding::operation) + 1=$pos]" -v "sourcePath" "$INPUT_FILE")
-      log "Operation $type found at position $pos, sourcePath=$src"
+ case "$type" in
+   create)
+     dst=$(xmllint --xpath "//operation[$pos]/destinationPath/text()" "$INPUT_FILE" 2>/dev/null)
+     log "Operation '$type' found at position $pos, destinationPath=$dst"
 
-      if [ ! -f "$src" ]; then
-        echo "repoplay: Error: Source file '$src' does not exist for $type operation"
-        exit 1
-      fi
+     if [ -f "$dst" ]; then
+       echo "repoplay: Error: Destination file '$dst' already exists for create operation"
+       exit 1
+     fi
+     ;;
 
-      if [[ "$type" == "update" || "$type" == "delete" || "$type" == "move" ]]; then
-        backup="$src.tmp"
-        cp "$src" "$backup"
-        BACKUPS+=("$backup")
-        log "Backed up $src to $backup"
-      fi
-      ;;
+   update|delete|move|dup)
+     src=$(xmllint --xpath "//operation[$pos]/sourcePath/text()" "$INPUT_FILE" 2>/dev/null)
+     log "Operation '$type' found at position $pos, sourcePath=$src"
 
-    *)
-      echo "repoplay: Error: Invalid operation '$type' in pre-check phase"
-      exit 1
-      ;;
-  esac
+     if [ ! -f "$src" ]; then
+       echo "repoplay: Error: Source file '$src' does not exist for $type operation"
+       exit 1
+     fi
+
+     if [[ "$type" == "update" || "$type" == "delete" || "$type" == "move" ]]; then
+       backup="$src.tmp"
+       cp "$src" "$backup"
+       BACKUPS+=("$backup")
+       log "Backed up $src to $backup"
+     fi
+     ;;
+
+   *)
+     echo "repoplay: Error: Invalid operation '$type' in pre-check phase"
+     exit 1
+     ;;
+ esac
 done
 
 # was exit 1 called inside the while loop (pipeline means an exit in the while is in a sub-process)
@@ -217,47 +232,36 @@ if [ $? -ne 0 ]; then
   exit 1
 fi
 
-if [ "$DRY_RUN" = true ]; then
-  log "Dry run beginning..."
-else
-  log "Applying operations..."
-fi
-
 # Apply operations
-xmlstarlet sel -t -m "/operations/operation" \
-    -v "concat(@type,'|',count(preceding::operation) + 1)" -n "$INPUT_FILE" | \
-    while IFS='|' read -r type pos; do
+log "Applying operations..."
 
-  log "Operation $type found at position $pos"
+for ((pos=1; pos<=$count; pos++)); do
+  type=$(xmllint --xpath "string(//operation[$pos]/@type)" "$INPUT_FILE" 2>/dev/null)
+  log "Operation '$type' found at position $pos"
 
   case "$type" in
     create)
-      dst=$(xmlstarlet sel -t -m "/operations/operation[@type='create' and \
-        count(preceding::operation) + 1=$pos]" \
-        -v "destinationPath" "$INPUT_FILE")
-      content=$(xmlstarlet sel -t -m "/operations/operation[@type='create' and \
-        count(preceding::operation) + 1=$pos]" \
-        -v "content" "$INPUT_FILE")
+      dst=$(xmllint --xpath "//operation[$pos]/destinationPath/text()" "$INPUT_FILE" 2>/dev/null)
+      content=$(xmllint --xpath "//operation[$pos]/content/text()" "$INPUT_FILE" 2>/dev/null | \
+              sed 's/^\s*<!\[CDATA\[//;s/\]\]>\s*$//')
       
       if [ "$DRY_RUN" = true ]; then
-        echo "repoplay: (dry-run) Would create file '$dst'"
+        echo "repoplay: (dry-run) Didn't create file '$dst'"
       else
+        mkdir -p "$(dirname "$dst")" && \
         printf "%s" "$content" > "$dst" || \
-          { echo "repoplay: Error: Failed to create file '$dst'"; exit 1; }
+            { echo "repoplay: Error: Failed to create file '$dst'"; exit 1; }
         log "Created $dst"
       fi
       ;;
 
     update)
-      src=$(xmlstarlet sel -t -m "/operations/operation[@type='update' and \
-        count(preceding::operation) + 1=$pos]" \
-        -v "sourcePath" "$INPUT_FILE")
-      content=$(xmlstarlet sel -t -m "/operations/operation[@type='update' and \
-        count(preceding::operation) + 1=$pos]" \
-        -v "content" "$INPUT_FILE")
+      src=$(xmllint --xpath "//operation[$pos]/sourcePath/text()" "$INPUT_FILE" 2>/dev/null)
+      content=$(xmllint --xpath "//operation[$pos]/content/text()" "$INPUT_FILE" 2>/dev/null | \
+              sed 's/^\s*<!\[CDATA\[//;s/\]\]>\s*$//')
       
       if [ "$DRY_RUN" = true ]; then
-        echo "repoplay: (dry-run) Would update file '$src'"
+        echo "repoplay: (dry-run) Didn't update file '$src'"
       else
         printf "%s" "$content" > "$src" || \
           { echo "repoplay: Error: Failed to update file '$src'"; exit 1; }
@@ -266,12 +270,10 @@ xmlstarlet sel -t -m "/operations/operation" \
       ;;
 
     delete)
-      src=$(xmlstarlet sel -t -m "/operations/operation[@type='delete' and \
-        count(preceding::operation) + 1=$pos]" \
-        -v "sourcePath" "$INPUT_FILE")
+      src=$(xmllint --xpath "//operation[$pos]/sourcePath/text()" "$INPUT_FILE" 2>/dev/null)
 
       if [ "$DRY_RUN" = true ]; then
-        echo "repoplay: (dry-run) Would delete file '$src'"
+        echo "repoplay: (dry-run) Didn't delete file '$src'"
       else
         rm "$src" || { echo "repoplay: Error: Failed to delete file '$src'"; exit 1; }
         log "Deleted $src"
@@ -279,33 +281,27 @@ xmlstarlet sel -t -m "/operations/operation" \
       ;;
 
     move)
-      src=$(xmlstarlet sel -t -m "/operations/operation[@type='move' and \
-        count(preceding::operation) + 1=$pos]" \
-        -v "sourcePath" "$INPUT_FILE")
-      dst=$(xmlstarlet sel -t -m "/operations/operation[@type='move' and \
-        count(preceding::operation) + 1=$pos]" \
-        -v "destinationPath" "$INPUT_FILE")
+      src=$(xmllint --xpath "//operation[$pos]/sourcePath/text()" "$INPUT_FILE" 2>/dev/null)
+      dst=$(xmllint --xpath "//operation[$pos]/destinationPath/text()" "$INPUT_FILE" 2>/dev/null)
 
       if [ "$DRY_RUN" = true ]; then
         echo "repoplay: (dry-run) Would move file '$src' to '$dst'"
       else
-        mv "$src" "$dst" || { echo "repoplay: Error: Failed to move '$src' to '$dst'"; exit 1; }
+        mkdir -p "$(dirname "$dst")" && \
+          mv "$src" "$dst" || { echo "repoplay: Error: Failed to move '$src' to '$dst'"; exit 1; }
         log "Moved $src to $dst"
       fi
       ;;
 
     dup)
-      src=$(xmlstarlet sel -t -m "/operations/operation[@type='dup' and \
-        count(preceding::operation) + 1=$pos]" \
-        -v "sourcePath" "$INPUT_FILE")
-      dst=$(xmlstarlet sel -t -m "/operations/operation[@type='dup' and \
-      count(preceding::operation) + 1=$pos]" \
-        -v "destinationPath" "$INPUT_FILE")
+      src=$(xmllint --xpath "//operation[$pos]/sourcePath/text()" "$INPUT_FILE" 2>/dev/null)
+      dst=$(xmllint --xpath "//operation[$pos]/destinationPath/text()" "$INPUT_FILE" 2>/dev/null)
 
       if [ "$DRY_RUN" = true ]; then
-        echo "repoplay: (dry-run) Would copy file '$src' to '$dst'"
+        echo "repoplay: (dry-run) Didn't copy file '$src' to '$dst'"
       else
-        cp "$src" "$dst" || { echo "repoplay: Error: Failed to duplicate '$src' to '$dst'"; exit 1; }
+        mkdir -p "$(dirname "$dst")" && \
+          cp "$src" "$dst" || { echo "repoplay: Error: Failed to duplicate '$src' to '$dst'"; exit 1; }
         log "Duplicated $src to $dst"
       fi
       ;;
@@ -336,4 +332,3 @@ if [ "$DRY_RUN" = true ]; then
 else
   log "All operations completed successfully"
 fi
-
