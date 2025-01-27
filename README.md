@@ -55,7 +55,7 @@ The XML output the LLM produces should be saved to a file.
 
 ### Reduced tokens
 
-Most changes will be patches to existing files. For these, the XML file uses _unified diff_ format in order to minimise output token counts.
+Most changes will be patches to existing files. For these, the XML file uses _unified diff_ format in order to minimise output token counts and reduce the time taken to generate the output.
 
 ## repoplay command
 
