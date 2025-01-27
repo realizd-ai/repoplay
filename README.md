@@ -1,10 +1,13 @@
 # repoplay
-CLI tool for applying changes proposed by the RepoPrompt application
+macOS CLI tool for applying the changes staged by the [RepoPrompt](https://repoprompt.com/) application.
 
-##RepoPrompt
-This prompt and CLI tool are intented to work with the RepoPrompt macOS application.
+## RepoPrompt CoT Prompt
+This prompt is intented to work with the **RepoPrompt** macOS application.
 
-The `RepoPrompt CoT Prompt.txt` prompt should be saved as a stored prompt within RepoPrompt. Once the RepoPrompt prompt bundle is copied and given to the LLM of your choice, it will produce output in this XML format:
+The `RepoPrompt CoT Prompt.txt` prompt should be saved as a stored prompt within **RepoPrompt**. Select it as the only stored prompt to apply to your instructions. Once the **RepoPrompt** prompt bundle has been copied and given to the LLM of your choice, it will produce output in this XML format.
+
+## XML format
+The output of the LLM will be in the form of a single XML object in the format below. It supports basic operations for modifying a repo: create, patch, delete, move, dup.
 
 ```xml
 <operations>
@@ -48,19 +51,19 @@ export default function ContactForm() { return <form>...</form>; }
 </operations>
 ```
 
-The XML output the LLM produces should be saved into a file.
+The XML output the LLM produces should be saved to a file.
 
-## Reduced tokens
+### Reduced tokens
 
-Most changes will be patches to existing files. For these, the XML file expresses the changes using _unified diff_ format in order to minimise output token counts.
+Most changes will be patches to existing files. For these, the XML file uses _unified diff_ format in order to minimise output token counts.
 
-## repoplay bash script
+## repoplay command
 
-The `repoplay` bash script can then be used to apply those changes. The paths inside the XML are all absolute paths so it doesn't matter where you are when you play the changes.
+The `repoplay` bash script can then be used to apply those changes. The paths inside the XML are absolute paths so it doesn't matter where you are when you play the changes.
 
 ```
-./repoplay -h                                                                                             ✔
-Usage: repoplay [OPTION]... REPO-PATCH-FILE
+$ ./repoplay -h                                                                                             ✔
+Usage: repoplay [OPTION]... XML-PATCH-FILE
 Apply repository changes from an XML file.
 
 Options:
@@ -72,10 +75,11 @@ Options:
 Example:
   repoplay changes.xml
   repoplay -v -d changes.xml
+  repoplay --dry-run changes.xml
 ```
 
 ## Safety
 
-The script is making source code changes, so it is cautious. It prechecks the XML and the files it will operate on. If it sees any problems, it exists before making changes. It backs up all the files that it intends to modify and — if it later encounters a problem — the original files are restored from these backups.
+The script is making source code changes, so it is cautious. It prechecks the XML and the files it will operate on. If it sees any problems, it exits before making changes. It backs up the files that it intends to modify and — if it later encounters a problem — the original files are restored from these backups.
 
-There's also a dry-run option (--dry-run) which shows the changes that would be made without making them.
+There's also a dry-run option which shows the changes that would be made without making them.
