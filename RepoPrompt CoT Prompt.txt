@@ -21,22 +21,17 @@ Finally, make your changes by outputing them in the following format:
   <!-- Creates a new file -->
   <operation type="create">
     <destinationPath>/absolute-path/ContactForm.tsx</destinationPath>
-    <content><![CDATA[
-import React from 'react';
+    <content><![CDATA[import React from 'react';
 export default function ContactForm() { return <form>...</form>; }
     ]]></content>
   </operation>
 
-  <!-- Applies a patch (unified diff) to an existing file -->
-  <operation type="patch">
-    <sourcePath>/absolute-path/Header.tsx</sourcePath>
-    <diff><![CDATA[
-@@ -2,3 +2,3 @@
- set option1
--set option2
-+set option3
- set option4
-    ]]></diff>
+  <!-- Updates/replaces contents of an existing file -->
+  <operation type="update">
+    <sourcePath>/absolute-path/ContactForm.tsx</sourcePath>
+    <content><![CDATA[import React from 'react';
+export default function ContactForm() { return <form>...</form>; }
+    ]]></content>
   </operation>
 
   <!-- Deletes an existing file -->

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-set -uo pipefail
+set -ou pipefail
 
 # Uncomment for debugging
 #export PS4='+${LINENO}: '
@@ -12,22 +12,17 @@ print_xmlhelp() {
   <!-- Creates a new file -->
   <operation type="create">
     <destinationPath>/absolute-path/ContactForm.tsx</destinationPath>
-    <content><![CDATA[
-import React from 'react';
+    <content><![CDATA[import React from 'react';
 export default function ContactForm() { return <form>...</form>; }
     ]]></content>
   </operation>
 
-  <!-- Applies a patch (unified diff) to an existing file -->
-  <operation type="patch">
-    <sourcePath>/absolute-path/Header.tsx</sourcePath>
-    <diff><![CDATA[
-@@ -2,3 +2,3 @@
- set option1
--set option2
-+set option3
- set option4
-    ]]></diff>
+  <!-- Updates/replaces contents of an existing file -->
+  <operation type="update">
+    <sourcePath>/absolute-path/ContactForm.tsx</sourcePath>
+    <content><![CDATA[import React from 'react';
+export default function ContactForm() { return <form>...</form>; }
+    ]]></content>
   </operation>
 
   <!-- Deletes an existing file -->
@@ -52,7 +47,7 @@ EOF
 
 print_help() {
   cat <<EOF
-Usage: repoplay [OPTION]... REPO-PATCH-FILE
+Usage: repoplay [OPTION]... XML-PATCH-FILE
 Apply repository changes from an XML file.
 
 Options:
@@ -83,6 +78,7 @@ log() {
 cleanup() {
   if [ "${#BACKUPS[@]:-0}" -gt 0 ]; then
     echo "repoplay: Error occurred. Restoring backups..."
+
     for backup in "${BACKUPS[@]}"; do
       original="${backup%.tmp}"
       if [ -f "$backup" ]; then
@@ -91,6 +87,7 @@ cleanup() {
       fi
     done
   fi
+
   echo "repoplay: no files have been modified"
   exit 1
 }
@@ -105,7 +102,8 @@ trap unhandled_error ERR
 
 # Check for xmlstarlet
 if ! command -v xmlstarlet >/dev/null 2>&1; then
-  echo "repoplay: Error: xmlstarlet is not installed. Please install it using: sudo apt-get install xmlstarlet"
+  echo "repoplay: Error: xmlstarlet is not installed"
+  echo "repoplay: Please install it using: 'sudo apt-get install xmlstarlet' or 'brew install xmlstarlet'"
   exit 1
 fi
 
@@ -172,15 +170,15 @@ fi
 log "Parsed operations"
 
 # Pre-check phase
-log "Pre-checking all operations..."
+log "Pre-checking all operations"
 xmlstarlet sel -t -m "/operations/operation" \
-  -v "concat(@type,'|',count(preceding::operation) + 1)" -n "$INPUT_FILE" | \
-  while IFS='|' read -r type pos; do
+    -v "concat(@type,'|',count(preceding::operation) + 1)" -n "$INPUT_FILE" | \
+    while IFS='|' read -r type pos; do
 
   case "$type" in
     create)
-      dst=$(xmlstarlet sel -t -m "/operations/operation[@type='create' and count(preceding::operation) + 1=$pos]" \
-        -v "destinationPath" "$INPUT_FILE")
+      dst=$(xmlstarlet sel -t -m "/operations/operation[@type='create' and \
+        count(preceding::operation) + 1=$pos]" -v "destinationPath" "$INPUT_FILE")
       log "Operation $type found at position $pos, destinationPath=$dst"
 
       if [ -f "$dst" ]; then
@@ -189,12 +187,17 @@ xmlstarlet sel -t -m "/operations/operation" \
       fi
       ;;
 
-    patch|delete|move|dup)
-      src=$(xmlstarlet sel -t -m "/operations/operation[@type='$type' and count(preceding::operation) + 1=$pos]" \
-        -v "sourcePath" "$INPUT_FILE")
+    update|delete|move|dup)
+      src=$(xmlstarlet sel -t -m "/operations/operation[@type='$type' and \
+        count(preceding::operation) + 1=$pos]" -v "sourcePath" "$INPUT_FILE")
       log "Operation $type found at position $pos, sourcePath=$src"
 
-      if [[ "$type" == "patch" || "$type" == "delete" || "$type" == "move" ]]; then
+      if [ ! -f "$src" ]; then
+        echo "repoplay: Error: Source file '$src' does not exist for $type operation"
+        exit 1
+      fi
+
+      if [[ "$type" == "update" || "$type" == "delete" || "$type" == "move" ]]; then
         backup="$src.tmp"
         cp "$src" "$backup"
         BACKUPS+=("$backup")
@@ -209,70 +212,118 @@ xmlstarlet sel -t -m "/operations/operation" \
   esac
 done
 
+# was exit 1 called inside the while loop (pipeline means an exit in the while is in a sub-process)
+if [ $? -ne 0 ]; then
+  exit 1
+fi
+
 if [ "$DRY_RUN" = true ]; then
-  log "Dry run complete. No changes made"
-  exit 0
+  log "Dry run beginning..."
+else
+  log "Applying operations..."
 fi
 
 # Apply operations
-log "Applying operations..."
 xmlstarlet sel -t -m "/operations/operation" \
-  -v "concat(@type,'|',count(preceding::operation) + 1)" -n "$INPUT_FILE" | while IFS='|' read -r type pos; do
-  log "Performing $type operation (position $pos)"
+    -v "concat(@type,'|',count(preceding::operation) + 1)" -n "$INPUT_FILE" | \
+    while IFS='|' read -r type pos; do
+
+  log "Operation $type found at position $pos"
+
   case "$type" in
     create)
-      dst=$(xmlstarlet sel -t -m "/operations/operation[@type='create' and count(preceding::operation) + 1=$pos]" \
+      dst=$(xmlstarlet sel -t -m "/operations/operation[@type='create' and \
+        count(preceding::operation) + 1=$pos]" \
         -v "destinationPath" "$INPUT_FILE")
-      content=$(xmlstarlet sel -t -m "/operations/operation[@type='create' and count(preceding::operation) + 1=$pos]" \
+      content=$(xmlstarlet sel -t -m "/operations/operation[@type='create' and \
+        count(preceding::operation) + 1=$pos]" \
         -v "content" "$INPUT_FILE")
-      log "Created $dst"
+      
+      if [ "$DRY_RUN" = true ]; then
+        echo "repoplay: (dry-run) Would create file '$dst'"
+      else
+        printf "%s" "$content" > "$dst" || \
+          { echo "repoplay: Error: Failed to create file '$dst'"; exit 1; }
+        log "Created $dst"
+      fi
       ;;
 
-    patch)
-      src=$(xmlstarlet sel -t -m "/operations/operation[@type='patch' and count(preceding::operation) + 1=$pos]" \
+    update)
+      src=$(xmlstarlet sel -t -m "/operations/operation[@type='update' and \
+        count(preceding::operation) + 1=$pos]" \
         -v "sourcePath" "$INPUT_FILE")
-      diff=$(xmlstarlet sel -t -m "/operations/operation[@type='patch' and count(preceding::operation) + 1=$pos]" \
-        -v "diff" "$INPUT_FILE")
-      printf "%s" "$diff" > /tmp/current_patch_$$.diff
-      log "Patch content saved to /tmp/current_patch_$$.diff"
-      patch "$src" < /tmp/current_patch_$$.diff
-      rm /tmp/current_patch_$$.diff
-      log "Patched $src"
+      content=$(xmlstarlet sel -t -m "/operations/operation[@type='update' and \
+        count(preceding::operation) + 1=$pos]" \
+        -v "content" "$INPUT_FILE")
+      
+      if [ "$DRY_RUN" = true ]; then
+        echo "repoplay: (dry-run) Would update file '$src'"
+      else
+        printf "%s" "$content" > "$src" || \
+          { echo "repoplay: Error: Failed to update file '$src'"; exit 1; }
+        log "Updated $src"
+      fi
       ;;
 
     delete)
-      src=$(xmlstarlet sel -t -m "/operations/operation[@type='delete' and count(preceding::operation) + 1=$pos]" \
+      src=$(xmlstarlet sel -t -m "/operations/operation[@type='delete' and \
+        count(preceding::operation) + 1=$pos]" \
         -v "sourcePath" "$INPUT_FILE")
-      rm "$src"
-      log "Deleted $src"
+
+      if [ "$DRY_RUN" = true ]; then
+        echo "repoplay: (dry-run) Would delete file '$src'"
+      else
+        rm "$src" || { echo "repoplay: Error: Failed to delete file '$src'"; exit 1; }
+        log "Deleted $src"
+      fi
       ;;
 
     move)
-      src=$(xmlstarlet sel -t -m "/operations/operation[@type='move' and count(preceding::operation) + 1=$pos]" \
+      src=$(xmlstarlet sel -t -m "/operations/operation[@type='move' and \
+        count(preceding::operation) + 1=$pos]" \
         -v "sourcePath" "$INPUT_FILE")
-      dst=$(xmlstarlet sel -t -m "/operations/operation[@type='move' and count(preceding::operation) + 1=$pos]" \
+      dst=$(xmlstarlet sel -t -m "/operations/operation[@type='move' and \
+        count(preceding::operation) + 1=$pos]" \
         -v "destinationPath" "$INPUT_FILE")
-      mv "$src" "$dst"
-      log "Moved $src to $dst"
+
+      if [ "$DRY_RUN" = true ]; then
+        echo "repoplay: (dry-run) Would move file '$src' to '$dst'"
+      else
+        mv "$src" "$dst" || { echo "repoplay: Error: Failed to move '$src' to '$dst'"; exit 1; }
+        log "Moved $src to $dst"
+      fi
       ;;
 
     dup)
-      src=$(xmlstarlet sel -t -m "/operations/operation[@type='dup' and count(preceding::operation) + 1=$pos]" \
+      src=$(xmlstarlet sel -t -m "/operations/operation[@type='dup' and \
+        count(preceding::operation) + 1=$pos]" \
         -v "sourcePath" "$INPUT_FILE")
-      dst=$(xmlstarlet sel -t -m "/operations/operation[@type='dup' and count(preceding::operation) + 1=$pos]" \
+      dst=$(xmlstarlet sel -t -m "/operations/operation[@type='dup' and \
+      count(preceding::operation) + 1=$pos]" \
         -v "destinationPath" "$INPUT_FILE")
-      cp "$src" "$dst"
-      log "Duplicated $src to $dst"
+
+      if [ "$DRY_RUN" = true ]; then
+        echo "repoplay: (dry-run) Would copy file '$src' to '$dst'"
+      else
+        cp "$src" "$dst" || { echo "repoplay: Error: Failed to duplicate '$src' to '$dst'"; exit 1; }
+        log "Duplicated $src to $dst"
+      fi
       ;;
 
     *)
       echo "repoplay: Error: Unknown operation '$type'"
-      cleanup
+      exit 1
       ;;
   esac
 done
 
-# Cleanup backups
+# was exit 1 called inside the while loop (pipeline means an exit in the while is in a sub-process)
+if [ $? -ne 0 ]; then
+  cleanup
+  exit 1
+fi
+
+# Delete unused backups
 if [ "${#BACKUPS[@]:-0}" -gt 0 ]; then
   for backup in "${BACKUPS[@]}"; do
     rm "$backup"
@@ -280,4 +331,9 @@ if [ "${#BACKUPS[@]:-0}" -gt 0 ]; then
   done
 fi
 
-log "All operations completed successfully"
+if [ "$DRY_RUN" = true ]; then
+  log "Dry-run completed successfully"
+else
+  log "All operations completed successfully"
+fi
+
