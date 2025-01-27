@@ -251,6 +251,8 @@ for ((pos=1; pos<=$count; pos++)); do
         mkdir -p "$(dirname "$dst")" && \
         printf "%s" "$content" > "$dst" || \
             { echo "repoplay: Error: Failed to create file '$dst'"; exit 1; }
+        
+        CREATED_FILES+=("$dst")  # Track the created file
         log "Created $dst"
       fi
       ;;
@@ -302,6 +304,8 @@ for ((pos=1; pos<=$count; pos++)); do
       else
         mkdir -p "$(dirname "$dst")" && \
           cp "$src" "$dst" || { echo "repoplay: Error: Failed to duplicate '$src' to '$dst'"; exit 1; }
+
+        CREATED_FILES+=("$dst")  # Track the created file
         log "Duplicated $src to $dst"
       fi
       ;;
