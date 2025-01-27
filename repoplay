@@ -1,50 +1,69 @@
 #!/bin/bash
 
-set -euo pipefail
+set -uo pipefail
 
-# Print help message
+# Uncomment for debugging
+#export PS4='+${LINENO}: '
+#set -x
+
+print_xmlhelp() {
+  cat <<EOF
+<operations>
+  <!-- Creates a new file -->
+  <operation type="create">
+    <destinationPath>/absolute-path/ContactForm.tsx</destinationPath>
+    <content><![CDATA[
+import React from 'react';
+export default function ContactForm() { return <form>...</form>; }
+    ]]></content>
+  </operation>
+
+  <!-- Applies a patch (unified diff) to an existing file -->
+  <operation type="patch">
+    <sourcePath>/absolute-path/Header.tsx</sourcePath>
+    <diff><![CDATA[
+@@ -2,3 +2,3 @@
+ set option1
+-set option2
++set option3
+ set option4
+    ]]></diff>
+  </operation>
+
+  <!-- Deletes an existing file -->
+  <operation type="delete">
+    <sourcePath>/absolute-path/OldComponent.tsx</sourcePath>
+  </operation>
+
+  <!-- Moves or renames a file -->
+  <operation type="move">
+    <sourcePath>/absolute-path/LegacyButton.tsx</sourcePath>
+    <destinationPath>/absolute-path/ui/LegacyButton.tsx</destinationPath>
+  </operation>
+
+  <!-- Duplicates an existing file -->
+  <operation type="dup">
+    <sourcePath>/absolute-path/src/components/Template.tsx</sourcePath>
+    <destinationPath>/absolute-path/src/components/TemplateCopy.tsx</destinationPath>
+  </operation>
+</operations>
+EOF
+}
+
 print_help() {
   cat <<EOF
 Usage: repoplay [OPTION]... REPO-PATCH-FILE
-Apply repository changes from a JSON file.
+Apply repository changes from an XML file.
 
 Options:
-  -h, --help       Show this help message and exit.
-  -v, --verbose    Enable verbose output (logs actions as they happen).
-  -d, --dry-run    Validate input and show planned actions without modifying files.
+  -h, --help       Show this help message and exit
+  -x, --xmlhelp    Show the XML format of the patch file 
+  -v, --verbose    Enable verbose output
+  -d, --dry-run    Validate input and show planned actions without modifying files
 
 Example:
-  repoplay changes.json
-  repoplay -v -d changes.json
-
-Repo patch file format:
-  [
-      {
-          "operation": "create", // Creates a new file
-          "destinationPath": "/absolute-path/Form.tsx", // The absolute path of the new file
-          "content": "import React from 'react';\n" // Full content of the new file
-      },
-      {
-          "operation": "patch", // Applies a patch (unified diff) to an existing file
-          "sourcePath": "/absolute-path/Header.tsx", // The absolute path of the file to be updated
-          "diff": "@@ -2,1 +2,1 @@\n set option1\n" // Unified diff describing changes to the file
-      },
-      {
-          "operation": "delete", // Deletes an existing file
-          "sourcePath": "/absolute-path/OldComponent.tsx" // The absolute path of the file to delete
-      },
-      {
-          "operation": "move", // Moves or renames a file
-          "sourcePath": "/absolute-path/LegacyButton.tsx", // The absolute path of the file to move
-          "destinationPath": "/absolute-path/LegacyButton.tsx" // The new absolute path for the file
-      },
-      {
-          "operation": "dup", // Duplicates an existing file
-          "sourcePath": "/absolute-path/Template.tsx", // The absolute path of the file to duplicate
-          "destinationPath": "/absolute-path/TemplateCopy.tsx" // The absolute path for the duplicate
-      }
-  ]
-
+  repoplay changes.xml
+  repoplay -v -d changes.xml
 EOF
 }
 
@@ -62,7 +81,7 @@ log() {
 
 # Cleanup function (restores backups on error)
 cleanup() {
-  if [ "${#BACKUPS[@]}" -gt 0 ]; then
+  if [ "${#BACKUPS[@]:-0}" -gt 0 ]; then
     echo "repoplay: Error occurred. Restoring backups..."
     for backup in "${BACKUPS[@]}"; do
       original="${backup%.tmp}"
@@ -76,13 +95,29 @@ cleanup() {
   exit 1
 }
 
-trap cleanup ERR
+# executes if any command returns a non-zero exit status
+unhandled_error() {
+    echo "repoplay: An unhandled non-zero exit status has been returned"
+    cleanup
+}
+
+trap unhandled_error ERR
+
+# Check for xmlstarlet
+if ! command -v xmlstarlet >/dev/null 2>&1; then
+  echo "repoplay: Error: xmlstarlet is not installed. Please install it using: sudo apt-get install xmlstarlet"
+  exit 1
+fi
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help)
       print_help
+      exit 0
+      ;;
+    -x|--xmlhelp)
+      print_xmlhelp
       exit 0
       ;;
     -v|--verbose)
@@ -93,117 +128,156 @@ while [[ $# -gt 0 ]]; do
       DRY_RUN=true
       shift
       ;;
-    *)
-      INPUT_FILE="$1"
+    -*) # Detect unknown options
+      echo "repoplay: Error: Unknown option '$1'"
+      exit 1
+      ;;
+    *) # Handle positional arguments
+      if [[ -z "${INPUT_FILE:-}" ]]; then
+        INPUT_FILE="$1"
+      else
+        echo "repoplay: Error: Unexpected argument '$1'"
+        exit 1
+      fi
       shift
       ;;
   esac
 done
 
-if [ -z "${INPUT_FILE:-}" ]; then
-  echo "repoplay: Error: No input file specified. Use -h for help."
+if [[ -z "${INPUT_FILE:-}" ]]; then
+  echo "repoplay: Error: Exactly one input file must be specified. Use -h for help"
   exit 1
 fi
 
 if [ ! -f "$INPUT_FILE" ]; then
-  echo "repoplay: Error: Input file '$INPUT_FILE' does not exist."
+  echo "repoplay: Error: Input file '$INPUT_FILE' does not exist"
   exit 1
 fi
 
-log "Reading JSON from $INPUT_FILE"
+log "Reading XML from $INPUT_FILE"
 
-# Read and parse the JSON file
-OPERATIONS=$(jq -c '.[]' "$INPUT_FILE")
+# Validate XML format
+if ! xmlstarlet val --well-formed "$INPUT_FILE" >/dev/null 2>&1; then
+  echo "repoplay: Error: Invalid XML format in $INPUT_FILE"
+  exit 1
+fi
+log "XML format is valid"
+
+# Parse XML operations
+OPERATIONS=$(xmlstarlet sel -t -m "/operations/operation" -c "." "$INPUT_FILE")
+if [ -z "$OPERATIONS" ]; then
+  echo "repoplay: Error: No operations found in the input file"
+  exit 1
+fi
+log "Parsed operations"
 
 # Pre-check phase
 log "Pre-checking all operations..."
-for op in $OPERATIONS; do
-  operation=$(echo "$op" | jq -r '.operation')
-  case "$operation" in
+xmlstarlet sel -t -m "/operations/operation" \
+  -v "concat(@type,'|',count(preceding::operation) + 1)" -n "$INPUT_FILE" | \
+  while IFS='|' read -r type pos; do
+
+  case "$type" in
     create)
-      dst=$(echo "$op" | jq -r '.destinationPath')
+      dst=$(xmlstarlet sel -t -m "/operations/operation[@type='create' and count(preceding::operation) + 1=$pos]" \
+        -v "destinationPath" "$INPUT_FILE")
+      log "Operation $type found at position $pos, destinationPath=$dst"
+
       if [ -f "$dst" ]; then
-        echo "repoplay: Error: Destination file '$dst' already exists for create operation."
+        echo "repoplay: Error: Destination file '$dst' already exists for create operation"
         exit 1
       fi
       ;;
+
     patch|delete|move|dup)
-      src=$(echo "$op" | jq -r '.sourcePath')
-      if [ ! -f "$src" ]; then
-        echo "repoplay: Error: Source file '$src' does not exist for $operation operation."
-        exit 1
-      fi
-      if [[ "$operation" == "patch" || "$operation" == "delete" || "$operation" == "move" ]]; then
+      src=$(xmlstarlet sel -t -m "/operations/operation[@type='$type' and count(preceding::operation) + 1=$pos]" \
+        -v "sourcePath" "$INPUT_FILE")
+      log "Operation $type found at position $pos, sourcePath=$src"
+
+      if [[ "$type" == "patch" || "$type" == "delete" || "$type" == "move" ]]; then
         backup="$src.tmp"
         cp "$src" "$backup"
         BACKUPS+=("$backup")
         log "Backed up $src to $backup"
       fi
       ;;
+
     *)
-      echo "repoplay: Error: Invalid operation '$operation' in pre-check phase."
+      echo "repoplay: Error: Invalid operation '$type' in pre-check phase"
       exit 1
       ;;
   esac
-
-  # Ensure the operation is explicitly valid
-  if [[ "$operation" != "create" && "$operation" != "patch" && "$operation" != "delete" && "$operation" != "move" && "$operation" != "dup" ]]; then
-    echo "repoplay: Error: Unsupported operation '$operation' detected during validation."
-    exit 1
-  fi
 done
 
 if [ "$DRY_RUN" = true ]; then
-  log "Dry run complete. No changes made."
+  log "Dry run complete. No changes made"
   exit 0
 fi
 
 # Apply operations
 log "Applying operations..."
-for op in $OPERATIONS; do
-  operation=$(echo "$op" | jq -r '.operation')
-  case "$operation" in
+xmlstarlet sel -t -m "/operations/operation" \
+  -v "concat(@type,'|',count(preceding::operation) + 1)" -n "$INPUT_FILE" | while IFS='|' read -r type pos; do
+  log "Performing $type operation (position $pos)"
+  case "$type" in
     create)
-      dst=$(echo "$op" | jq -r '.destinationPath')
-      content=$(echo "$op" | jq -r '.content')
-      echo -e "$content" > "$dst"
+      dst=$(xmlstarlet sel -t -m "/operations/operation[@type='create' and count(preceding::operation) + 1=$pos]" \
+        -v "destinationPath" "$INPUT_FILE")
+      content=$(xmlstarlet sel -t -m "/operations/operation[@type='create' and count(preceding::operation) + 1=$pos]" \
+        -v "content" "$INPUT_FILE")
       log "Created $dst"
       ;;
+
     patch)
-      src=$(echo "$op" | jq -r '.sourcePath')
-      diff=$(echo "$op" | jq -r '.diff')
-      echo -e "$diff" | patch "$src"
+      src=$(xmlstarlet sel -t -m "/operations/operation[@type='patch' and count(preceding::operation) + 1=$pos]" \
+        -v "sourcePath" "$INPUT_FILE")
+      diff=$(xmlstarlet sel -t -m "/operations/operation[@type='patch' and count(preceding::operation) + 1=$pos]" \
+        -v "diff" "$INPUT_FILE")
+      printf "%s" "$diff" > /tmp/current_patch_$$.diff
+      log "Patch content saved to /tmp/current_patch_$$.diff"
+      patch "$src" < /tmp/current_patch_$$.diff
+      rm /tmp/current_patch_$$.diff
       log "Patched $src"
       ;;
+
     delete)
-      src=$(echo "$op" | jq -r '.sourcePath')
+      src=$(xmlstarlet sel -t -m "/operations/operation[@type='delete' and count(preceding::operation) + 1=$pos]" \
+        -v "sourcePath" "$INPUT_FILE")
       rm "$src"
       log "Deleted $src"
       ;;
+
     move)
-      src=$(echo "$op" | jq -r '.sourcePath')
-      dst=$(echo "$op" | jq -r '.destinationPath')
+      src=$(xmlstarlet sel -t -m "/operations/operation[@type='move' and count(preceding::operation) + 1=$pos]" \
+        -v "sourcePath" "$INPUT_FILE")
+      dst=$(xmlstarlet sel -t -m "/operations/operation[@type='move' and count(preceding::operation) + 1=$pos]" \
+        -v "destinationPath" "$INPUT_FILE")
       mv "$src" "$dst"
       log "Moved $src to $dst"
       ;;
+
     dup)
-      src=$(echo "$op" | jq -r '.sourcePath')
-      dst=$(echo "$op" | jq -r '.destinationPath')
+      src=$(xmlstarlet sel -t -m "/operations/operation[@type='dup' and count(preceding::operation) + 1=$pos]" \
+        -v "sourcePath" "$INPUT_FILE")
+      dst=$(xmlstarlet sel -t -m "/operations/operation[@type='dup' and count(preceding::operation) + 1=$pos]" \
+        -v "destinationPath" "$INPUT_FILE")
       cp "$src" "$dst"
       log "Duplicated $src to $dst"
       ;;
+
     *)
-      echo "repoplay: Error: Unknown operation '$operation'."
+      echo "repoplay: Error: Unknown operation '$type'"
       cleanup
       ;;
   esac
 done
 
 # Cleanup backups
-for backup in "${BACKUPS[@]}"; do
-  rm "$backup"
-  log "Removed backup $backup"
-done
+if [ "${#BACKUPS[@]:-0}" -gt 0 ]; then
+  for backup in "${BACKUPS[@]}"; do
+    rm "$backup"
+    log "Removed backup $backup"
+  done
+fi
 
-log "All operations completed successfully."
-
+log "All operations completed successfully"
