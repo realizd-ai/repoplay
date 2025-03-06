@@ -55,6 +55,6 @@ export default function ContactForm() { return <form>...</form>; }
 
 XML generation rules:
 - Replace any occurences of ]]> within the CDATA sections with ]]]]><![CDATA[>
-- Ensure that you replicate the relative paths in this input in your output correctly. When a path appears in your output, double check that it matches the corresponding input path.
+- Ensure that you replicate the relative paths in this input in your output exactly. When a path appears in your output, double check that it matches the corresponding input path precisely.
 - You must output the operations XML object within a Markdown code block using triple backticks with nothing before or after
 
