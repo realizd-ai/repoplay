@@ -52,7 +52,7 @@ Apply repository changes from an XML file.
 
 Options:
   -h, --help       Show this help message and exit
-  -x, --xmlhelp    Show the XML format of the patch file 
+  -x, --xmlhelp    Show the XML format of the patch file
   -v, --verbose    Enable verbose output
   -d, --dry-run    Validate input and show planned actions without modifying files
 
@@ -244,14 +244,14 @@ for ((pos=1; pos<=$count; pos++)); do
       dst=$(xmllint --xpath "//operation[$pos]/destinationPath/text()" "$INPUT_FILE" 2>/dev/null)
       content=$(xmllint --xpath "//operation[$pos]/content/text()" "$INPUT_FILE" 2>/dev/null | \
               sed 's/^\s*<!\[CDATA\[//;s/\]\]>\s*$//')
-      
+
       if [ "$DRY_RUN" = true ]; then
         echo "repoplay: (dry-run) Didn't create file '$dst'"
       else
         mkdir -p "$(dirname "$dst")" && \
         printf "%s" "$content" > "$dst" || \
             { echo "repoplay: Error: Failed to create file '$dst'"; exit 1; }
-        
+
         CREATED_FILES+=("$dst")  # Track the created file
         log "Created $dst"
       fi
@@ -261,7 +261,7 @@ for ((pos=1; pos<=$count; pos++)); do
       src=$(xmllint --xpath "//operation[$pos]/sourcePath/text()" "$INPUT_FILE" 2>/dev/null)
       content=$(xmllint --xpath "//operation[$pos]/content/text()" "$INPUT_FILE" 2>/dev/null | \
               sed 's/^\s*<!\[CDATA\[//;s/\]\]>\s*$//')
-      
+
       if [ "$DRY_RUN" = true ]; then
         echo "repoplay: (dry-run) Didn't update file '$src'"
       else
@@ -336,3 +336,4 @@ if [ "$DRY_RUN" = true ]; then
 else
   log "All operations completed successfully"
 fi
+
